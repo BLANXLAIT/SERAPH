@@ -183,6 +183,62 @@ seraph/
 | API returns 500 | Check Lambda CloudWatch logs |
 | No data in queries | Verify Security Lake has data flowing |
 
+## CI/CD with GitHub Actions
+
+The repo includes a GitHub Actions workflow for automated deployments.
+
+### Setup
+
+1. **Create an IAM OIDC Provider** for GitHub Actions:
+   ```bash
+   aws iam create-open-id-connect-provider \
+     --url https://token.actions.githubusercontent.com \
+     --client-id-list sts.amazonaws.com \
+     --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+   ```
+
+2. **Create an IAM Role** for GitHub Actions with this trust policy:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": {
+           "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+         },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+           },
+           "StringLike": {
+             "token.actions.githubusercontent.com:sub": "repo:BLANXLAIT/SERAPH:*"
+           }
+         }
+       }
+     ]
+   }
+   ```
+
+3. **Attach policies** to the role:
+   - `AdministratorAccess` (for CDK deployments), or scoped policies for:
+     - CloudFormation, S3, CloudFront, Lambda, API Gateway, IAM, Glue, Athena
+
+4. **Add GitHub Secrets** (Settings → Secrets → Actions):
+   | Secret | Description |
+   |--------|-------------|
+   | `AWS_ROLE_ARN` | ARN of the IAM role created above |
+   | `S3_BUCKET_NAME` | From CDK output `BucketName` |
+   | `CLOUDFRONT_DISTRIBUTION_ID` | From CDK output (extract from URL) |
+
+### Workflows
+
+- **Push to main**: Automatically deploys frontend to S3 + invalidates CloudFront
+- **Manual trigger**: Can optionally deploy CDK infrastructure
+
+> **Note:** Lake Formation permissions must still be granted manually after infrastructure deployment.
+
 ## Development
 
 ```bash

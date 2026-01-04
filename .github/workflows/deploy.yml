@@ -1,0 +1,123 @@
+name: Deploy SERAPH
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_infrastructure:
+        description: 'Deploy CDK infrastructure'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: '20'
+  PYTHON_VERSION: '3.11'
+
+# Required for OIDC authentication with AWS
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    # Only run on manual trigger with deploy_infrastructure=true
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_infrastructure
+    outputs:
+      bucket_name: ${{ steps.cdk-outputs.outputs.bucket_name }}
+      distribution_id: ${{ steps.cdk-outputs.outputs.distribution_id }}
+      api_endpoint: ${{ steps.cdk-outputs.outputs.api_endpoint }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e ".[cdk]"
+
+      - name: Install CDK
+        run: npm install -g aws-cdk
+
+      - name: CDK Deploy
+        working-directory: infrastructure
+        run: |
+          cdk deploy seraph-web --require-approval never --outputs-file cdk-outputs.json
+
+      - name: Extract CDK outputs
+        id: cdk-outputs
+        working-directory: infrastructure
+        run: |
+          echo "bucket_name=$(jq -r '.["seraph-web"].BucketName' cdk-outputs.json)" >> $GITHUB_OUTPUT
+          echo "distribution_id=$(jq -r '.["seraph-web"].WebsiteURL' cdk-outputs.json | sed 's|https://||' | sed 's|.cloudfront.net||')" >> $GITHUB_OUTPUT
+          echo "api_endpoint=$(jq -r '.["seraph-web"].APIEndpoint' cdk-outputs.json)" >> $GITHUB_OUTPUT
+
+      - name: Post-deployment reminder
+        run: |
+          echo "::warning::Remember to grant Lake Formation permissions to the Lambda role!"
+          echo "See README.md Step 4 for the required commands."
+
+  deploy-frontend:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+    # Run on push to main, or after infrastructure deployment
+    needs: [deploy-infrastructure]
+    if: always() && (needs.deploy-infrastructure.result == 'success' || needs.deploy-infrastructure.result == 'skipped')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Deploy to S3
+        run: |
+          aws s3 sync frontend/dist/ s3://${{ secrets.S3_BUCKET_NAME }} --delete
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"
+
+      - name: Deployment complete
+        run: |
+          echo "Frontend deployed successfully!"
+          echo "URL: https://${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}.cloudfront.net"
