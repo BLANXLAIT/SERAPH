@@ -51,6 +51,7 @@ cdk.out/
 .cdk.staging/
 *.js
 !infrastructure/**/*.js
+!frontend/eslint.config.js
 *.d.ts
 
 # AWS
