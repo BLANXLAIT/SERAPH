@@ -1,5 +1,7 @@
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
-import { useSecurityLakeStatus, useLogSources, useTables } from '@/hooks/useSecurityLake';
+import { useSecurityLakeStatus, useLogSources, useTables, useRunQuery } from '@/hooks/useSecurityLake';
+import type { QueryResult } from '@/types';
 import {
   Database,
   CheckCircle,
@@ -8,26 +10,84 @@ import {
   Loader2,
   CloudCog,
   Table,
+  RefreshCw,
+  Clock,
+  Zap,
 } from 'lucide-react';
 
-// Map source names to display-friendly names
-const SOURCE_DISPLAY_NAMES: Record<string, string> = {
-  CLOUD_TRAIL_MGMT: 'CloudTrail Management',
-  SH_FINDINGS: 'Security Hub',
-  VPC_FLOW: 'VPC Flow Logs',
-  ROUTE53: 'Route 53 DNS',
-  LAMBDA_EXECUTION: 'Lambda Execution',
-  S3_DATA: 'S3 Data Events',
-  EKS_AUDIT: 'EKS Audit Logs',
-  WAF: 'WAF Logs',
+// Map source names to display-friendly names and table identifiers
+const SOURCE_CONFIG: Record<string, { displayName: string; tableKey: string; freshnessKey: string }> = {
+  CLOUD_TRAIL_MGMT: { displayName: 'CloudTrail Management', tableKey: 'cloud_trail', freshnessKey: 'CloudTrail' },
+  SH_FINDINGS: { displayName: 'Security Hub', tableKey: 'sh_findings', freshnessKey: 'Security Hub' },
+  VPC_FLOW: { displayName: 'VPC Flow Logs', tableKey: 'vpc_flow', freshnessKey: 'VPC Flow' },
+  ROUTE53: { displayName: 'Route 53 DNS', tableKey: 'route53', freshnessKey: 'Route53' },
+  LAMBDA_EXECUTION: { displayName: 'Lambda Execution', tableKey: 'lambda', freshnessKey: 'Lambda' },
+  S3_DATA: { displayName: 'S3 Data Events', tableKey: 's3_data', freshnessKey: 'S3' },
+  EKS_AUDIT: { displayName: 'EKS Audit Logs', tableKey: 'eks_audit', freshnessKey: 'EKS' },
+  WAF: { displayName: 'WAF Logs', tableKey: 'waf', freshnessKey: 'WAF' },
 };
+
+interface DataFreshness {
+  [source: string]: {
+    latestEvent: string | null;
+    hasRecentData: boolean;
+  };
+}
 
 export function SecurityLakeStatus() {
   const { data: status, isLoading: statusLoading, error: statusError } = useSecurityLakeStatus();
   const { data: sourcesData, isLoading: sourcesLoading } = useLogSources();
   const { data: tablesData, isLoading: tablesLoading } = useTables();
+  const runQueryMutation = useRunQuery();
+
+  const [dataFreshness, setDataFreshness] = useState<DataFreshness>({});
+  const [freshnessLoading, setFreshnessLoading] = useState(false);
+  const [freshnessChecked, setFreshnessChecked] = useState(false);
 
   const isLoading = statusLoading || sourcesLoading || tablesLoading;
+
+  // Load data freshness on mount
+  useEffect(() => {
+    if (!isLoading && !freshnessChecked) {
+      checkDataFreshness();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading]);
+
+  const checkDataFreshness = async () => {
+    setFreshnessLoading(true);
+    try {
+      const result: QueryResult = await runQueryMutation.mutateAsync('data-freshness');
+      if (result.status === 'succeeded' && result.rows) {
+        const freshness: DataFreshness = {};
+        result.rows.forEach((row) => {
+          const source = row.source;
+          const latestEvent = row.latest_event;
+          if (source) {
+            const hasRecent = latestEvent ? isRecent(latestEvent) : false;
+            freshness[source] = {
+              latestEvent: latestEvent ?? null,
+              hasRecentData: hasRecent,
+            };
+          }
+        });
+        setDataFreshness(freshness);
+      }
+    } catch {
+      // Silently handle error - freshness is optional
+    } finally {
+      setFreshnessLoading(false);
+      setFreshnessChecked(true);
+    }
+  };
+
+  // Check if timestamp is within last 24 hours
+  const isRecent = (timestamp: string): boolean => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffHours = (now.getTime() - date.getTime()) / (1000 * 60 * 60);
+    return diffHours < 24;
+  };
 
   if (isLoading) {
     return (
@@ -83,7 +143,26 @@ export function SecurityLakeStatus() {
               </p>
             </div>
           </div>
-          <StatusBadge enabled={isEnabled} status={status?.createStatus} />
+          <div className="flex items-center gap-3">
+            <button
+              onClick={checkDataFreshness}
+              disabled={freshnessLoading}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm',
+                'border border-gray-300 bg-white text-gray-700',
+                'hover:bg-gray-50 transition-colors',
+                'disabled:opacity-50 disabled:cursor-not-allowed'
+              )}
+            >
+              {freshnessLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              Check Status
+            </button>
+            <StatusBadge enabled={isEnabled} status={status?.createStatus} />
+          </div>
         </div>
       </div>
 
@@ -119,9 +198,27 @@ export function SecurityLakeStatus() {
 
       {/* Data Sources */}
       <div className="px-6 py-4">
-        <div className="flex items-center gap-2 mb-4">
-          <CloudCog className="h-4 w-4 text-gray-400" />
-          <h3 className="text-sm font-medium text-gray-700">Data Sources</h3>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <CloudCog className="h-4 w-4 text-gray-400" />
+            <h3 className="text-sm font-medium text-gray-700">Data Sources</h3>
+          </div>
+          {freshnessChecked && (
+            <div className="flex items-center gap-4 text-xs text-gray-500">
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-green-500" />
+                Receiving data
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-yellow-500" />
+                No recent data
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-gray-300" />
+                Not enabled
+              </span>
+            </div>
+          )}
         </div>
 
         {sources.length === 0 ? (
@@ -132,16 +229,27 @@ export function SecurityLakeStatus() {
               <div key={accountId}>
                 <p className="text-xs text-gray-400 mb-2">Account: {accountId}</p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {accountSources.map((source) => (
-                    <SourceItem
-                      key={`${source.accountId}-${source.sourceName}`}
-                      name={SOURCE_DISPLAY_NAMES[source.sourceName] ?? source.sourceName}
-                      version={source.sourceVersion}
-                      hasData={tables.some((t) =>
-                        t.name.toLowerCase().includes(source.sourceName.toLowerCase().replace('_', ''))
-                      )}
-                    />
-                  ))}
+                  {accountSources.map((source) => {
+                    const config = SOURCE_CONFIG[source.sourceName];
+                    const freshnessKey = config?.freshnessKey ?? source.sourceName;
+                    const freshness = dataFreshness[freshnessKey];
+                    const hasTable = tables.some((t) =>
+                      t.name.toLowerCase().includes((config?.tableKey ?? source.sourceName).toLowerCase())
+                    );
+
+                    return (
+                      <SourceItem
+                        key={`${source.accountId}-${source.sourceName}`}
+                        name={config?.displayName ?? source.sourceName}
+                        version={source.sourceVersion}
+                        hasTable={hasTable}
+                        latestEvent={freshness?.latestEvent ?? null}
+                        hasRecentData={freshness?.hasRecentData ?? false}
+                        isCheckingFreshness={freshnessLoading}
+                        freshnessChecked={freshnessChecked}
+                      />
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -202,30 +310,113 @@ function StatusBadge({ enabled, status }: { enabled: boolean; status?: string })
 function SourceItem({
   name,
   version,
-  hasData,
+  hasTable,
+  latestEvent,
+  hasRecentData,
+  isCheckingFreshness,
+  freshnessChecked,
 }: {
   name: string;
   version: string;
-  hasData: boolean;
+  hasTable: boolean;
+  latestEvent: string | null;
+  hasRecentData: boolean;
+  isCheckingFreshness: boolean;
+  freshnessChecked: boolean;
 }) {
+  // Determine status: active (recent data), warning (no recent data), or inactive (no table/data)
+  const getStatus = () => {
+    if (!freshnessChecked) {
+      return { type: 'checking' as const, label: 'Checking...' };
+    }
+    if (hasRecentData && latestEvent) {
+      return { type: 'active' as const, label: formatTimeAgo(latestEvent) };
+    }
+    if (hasTable && !hasRecentData) {
+      return { type: 'warning' as const, label: 'No recent data' };
+    }
+    return { type: 'inactive' as const, label: 'Not enabled' };
+  };
+
+  const status = getStatus();
+
+  const statusStyles = {
+    active: {
+      border: 'border-green-200',
+      bg: 'bg-green-50',
+      iconBg: 'bg-green-100',
+      icon: <Zap className="h-4 w-4 text-green-600" />,
+      nameColor: 'text-green-800',
+      statusColor: 'text-green-600',
+    },
+    warning: {
+      border: 'border-yellow-200',
+      bg: 'bg-yellow-50',
+      iconBg: 'bg-yellow-100',
+      icon: <AlertCircle className="h-4 w-4 text-yellow-600" />,
+      nameColor: 'text-yellow-800',
+      statusColor: 'text-yellow-600',
+    },
+    inactive: {
+      border: 'border-gray-200',
+      bg: 'bg-gray-50',
+      iconBg: 'bg-gray-100',
+      icon: <XCircle className="h-4 w-4 text-gray-400" />,
+      nameColor: 'text-gray-600',
+      statusColor: 'text-gray-400',
+    },
+    checking: {
+      border: 'border-gray-200',
+      bg: 'bg-gray-50',
+      iconBg: 'bg-gray-100',
+      icon: <Loader2 className="h-4 w-4 text-gray-400 animate-spin" />,
+      nameColor: 'text-gray-600',
+      statusColor: 'text-gray-400',
+    },
+  };
+
+  const style = statusStyles[status.type];
+
   return (
     <div
       className={cn(
-        'flex items-center justify-between px-3 py-2 rounded-lg border',
-        hasData ? 'border-green-200 bg-green-50' : 'border-gray-200 bg-gray-50'
+        'flex items-center justify-between px-3 py-3 rounded-lg border',
+        style.border,
+        style.bg
       )}
     >
-      <div className="flex items-center gap-2">
-        {hasData ? (
-          <CheckCircle className="h-4 w-4 text-green-500" />
-        ) : (
-          <AlertCircle className="h-4 w-4 text-gray-400" />
-        )}
-        <span className={cn('text-sm font-medium', hasData ? 'text-green-700' : 'text-gray-600')}>
-          {name}
-        </span>
+      <div className="flex items-center gap-3">
+        <div className={cn('p-1.5 rounded-md', style.iconBg)}>
+          {isCheckingFreshness ? (
+            <Loader2 className="h-4 w-4 text-gray-400 animate-spin" />
+          ) : (
+            style.icon
+          )}
+        </div>
+        <div>
+          <span className={cn('text-sm font-medium block', style.nameColor)}>
+            {name}
+          </span>
+          <span className={cn('text-xs flex items-center gap-1', style.statusColor)}>
+            {status.type === 'active' && <Clock className="h-3 w-3" />}
+            {status.label}
+          </span>
+        </div>
       </div>
-      <span className="text-xs text-gray-400">v{version}</span>
+      <span className="text-xs text-gray-400 bg-white/50 px-2 py-0.5 rounded">v{version}</span>
     </div>
   );
+}
+
+function formatTimeAgo(timestamp: string): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return date.toLocaleDateString();
 }
