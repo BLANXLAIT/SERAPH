@@ -3,6 +3,8 @@ name: Deploy SERAPH
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       deploy_infrastructure:
@@ -25,9 +27,59 @@ permissions:
   contents: read
 
 jobs:
+  lint-and-test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Frontend checks
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Type check frontend
+        working-directory: frontend
+        run: npx tsc -b
+
+      # Python checks
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install Python dependencies
+        run: uv pip install --system -e ".[dev,cdk]"
+
+      - name: Lint Python
+        run: ruff check .
+
+      - name: Type check Python
+        run: mypy infrastructure/stacks lambdas --ignore-missing-imports || echo "::warning::mypy found type issues (non-blocking)"
+
+      - name: Run Python tests
+        run: pytest tests/ -v --tb=short
+
   deploy-infrastructure:
     name: Deploy Infrastructure
     runs-on: ubuntu-latest
+    needs: [lint-and-test]
     # Only run on manual trigger with deploy_infrastructure=true
     if: github.event_name == 'workflow_dispatch' && inputs.deploy_infrastructure
     outputs:
@@ -86,8 +138,13 @@ jobs:
   deploy-frontend:
     name: Deploy Frontend
     runs-on: ubuntu-latest
-    needs: [deploy-infrastructure]
-    if: always() && (needs.deploy-infrastructure.result == 'success' || needs.deploy-infrastructure.result == 'skipped')
+    needs: [lint-and-test, deploy-infrastructure]
+    # Only deploy on push to main (not PRs), after lint passes
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      needs.lint-and-test.result == 'success' &&
+      (needs.deploy-infrastructure.result == 'success' || needs.deploy-infrastructure.result == 'skipped')
 
     steps:
       - name: Checkout
