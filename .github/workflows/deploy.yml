@@ -15,6 +15,9 @@ env:
   AWS_REGION: us-east-1
   NODE_VERSION: '20'
   PYTHON_VERSION: '3.11'
+  # Log Archive account resources
+  S3_BUCKET_NAME: seraph-web-websitebucket75c24d94-gdiastwqx3qy
+  CLOUDFRONT_DISTRIBUTION_ID: d3h1nbmpge10n1
 
 # Required for OIDC authentication with AWS
 permissions:
@@ -36,11 +39,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC to Management)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::982682372189:role/GitHubActionsRole
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Assume role in Log Archive account
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::779315395440:role/GitHubDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+          role-chaining: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -51,16 +61,14 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
-        run: |
-          uv pip install --system -e ".[cdk]"
+        run: uv pip install --system -e ".[cdk]"
 
       - name: Install CDK
         run: npm install -g aws-cdk
 
       - name: CDK Deploy
         working-directory: infrastructure
-        run: |
-          cdk deploy seraph-web --require-approval never --outputs-file cdk-outputs.json
+        run: cdk deploy seraph-web --require-approval never --outputs-file cdk-outputs.json
 
       - name: Extract CDK outputs
         id: cdk-outputs
@@ -73,12 +81,11 @@ jobs:
       - name: Post-deployment reminder
         run: |
           echo "::warning::Remember to grant Lake Formation permissions to the Lambda role!"
-          echo "See README.md Step 4 for the required commands."
+          echo "See CLAUDE.md for the required commands."
 
   deploy-frontend:
     name: Deploy Frontend
     runs-on: ubuntu-latest
-    # Run on push to main, or after infrastructure deployment
     needs: [deploy-infrastructure]
     if: always() && (needs.deploy-infrastructure.result == 'success' || needs.deploy-infrastructure.result == 'skipped')
 
@@ -86,11 +93,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC to Management)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::982682372189:role/GitHubActionsRole
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Assume role in Log Archive account
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::779315395440:role/GitHubDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+          role-chaining: true
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -108,16 +122,15 @@ jobs:
         run: npm run build
 
       - name: Deploy to S3
-        run: |
-          aws s3 sync frontend/dist/ s3://${{ secrets.S3_BUCKET_NAME }} --delete
+        run: aws s3 sync frontend/dist/ s3://${{ env.S3_BUCKET_NAME }} --delete
 
       - name: Invalidate CloudFront
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --distribution-id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
             --paths "/*"
 
       - name: Deployment complete
         run: |
           echo "Frontend deployed successfully!"
-          echo "URL: https://${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}.cloudfront.net"
+          echo "URL: https://${{ env.CLOUDFRONT_DISTRIBUTION_ID }}.cloudfront.net"
