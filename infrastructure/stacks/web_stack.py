@@ -50,6 +50,10 @@ class WebStack(Stack):
     - CloudFront distribution
     - API Gateway REST API
     - Lambda function for Security Lake queries
+
+    Context variables for cross-account deployment:
+    - security_lake_account_id: Account ID where Security Lake is deployed
+    - security_lake_database: Name of the Glue resource link database
     """
 
     def __init__(
@@ -59,6 +63,13 @@ class WebStack(Stack):
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        # Cross-account configuration from context
+        security_lake_account_id = self.node.try_get_context("security_lake_account_id")
+        security_lake_database = (
+            self.node.try_get_context("security_lake_database")
+            or "amazon_security_lake_glue_db_us_east_1"
+        )
 
         # S3 bucket for static website hosting (private, accessed via CloudFront)
         self.website_bucket = s3.Bucket(
@@ -100,6 +111,7 @@ class WebStack(Stack):
             memory_size=256,
             environment={
                 "ATHENA_OUTPUT_BUCKET": self.athena_results_bucket.bucket_name,
+                "SECURITY_LAKE_DATABASE": security_lake_database,
                 "LOG_LEVEL": "INFO",
             },
         )
@@ -107,7 +119,8 @@ class WebStack(Stack):
         # Grant Athena results bucket access
         self.athena_results_bucket.grant_read_write(self.api_fn)
 
-        # Security Lake API permissions
+        # Security Lake API permissions (only works for same-account deployments)
+        # For cross-account, the dashboard will show "External Security Lake" mode
         self.api_fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=[
@@ -135,19 +148,33 @@ class WebStack(Stack):
         )
 
         # Glue catalog access for Athena queries
+        # Include local resource link database and remote catalog if cross-account
+        glue_resources = [
+            f"arn:aws:glue:{Aws.REGION}:{Aws.ACCOUNT_ID}:catalog",
+            f"arn:aws:glue:{Aws.REGION}:{Aws.ACCOUNT_ID}:database/{security_lake_database}",
+            f"arn:aws:glue:{Aws.REGION}:{Aws.ACCOUNT_ID}:table/{security_lake_database}/*",
+            # Also allow default database pattern for backwards compatibility
+            f"arn:aws:glue:{Aws.REGION}:{Aws.ACCOUNT_ID}:database/amazon_security_lake_*",
+            f"arn:aws:glue:{Aws.REGION}:{Aws.ACCOUNT_ID}:table/amazon_security_lake_*/*",
+        ]
+        if security_lake_account_id:
+            # Cross-account: also need access to the remote catalog
+            glue_resources.extend([
+                f"arn:aws:glue:{Aws.REGION}:{security_lake_account_id}:catalog",
+                f"arn:aws:glue:{Aws.REGION}:{security_lake_account_id}:database/amazon_security_lake_*",
+                f"arn:aws:glue:{Aws.REGION}:{security_lake_account_id}:table/amazon_security_lake_*/*",
+            ])
+
         self.api_fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=[
                     "glue:GetDatabase",
+                    "glue:GetDatabases",
                     "glue:GetTable",
                     "glue:GetTables",
                     "glue:GetPartitions",
                 ],
-                resources=[
-                    f"arn:aws:glue:{Aws.REGION}:{Aws.ACCOUNT_ID}:catalog",
-                    f"arn:aws:glue:{Aws.REGION}:{Aws.ACCOUNT_ID}:database/amazon_security_lake_*",
-                    f"arn:aws:glue:{Aws.REGION}:{Aws.ACCOUNT_ID}:table/amazon_security_lake_*/*",
-                ],
+                resources=glue_resources,
             )
         )
 
@@ -175,7 +202,8 @@ class WebStack(Stack):
 
         # NOTE: Lake Formation permissions are granted manually via CLI because
         # Security Lake databases require special permissions to grant access.
-        # Run these commands after deployment:
+        #
+        # For same-account deployment:
         #   aws lakeformation grant-permissions \
         #     --principal DataLakePrincipalIdentifier=<LAMBDA_ROLE_ARN> \
         #     --resource '{"Database":{"Name":"amazon_security_lake_glue_db_us_east_1"}}' \
@@ -183,6 +211,16 @@ class WebStack(Stack):
         #   aws lakeformation grant-permissions \
         #     --principal DataLakePrincipalIdentifier=<LAMBDA_ROLE_ARN> \
         #     --resource '{"Table":{"DatabaseName":"..._us_east_1","TableWildcard":{}}}' \
+        #     --permissions SELECT DESCRIBE
+        #
+        # For cross-account deployment (using resource link):
+        #   aws lakeformation grant-permissions \
+        #     --principal DataLakePrincipalIdentifier=<LAMBDA_ROLE_ARN> \
+        #     --resource '{"Database":{"Name":"seraph_security_lake"}}' \
+        #     --permissions DESCRIBE
+        #   aws lakeformation grant-permissions \
+        #     --principal DataLakePrincipalIdentifier=<LAMBDA_ROLE_ARN> \
+        #     --resource '{"Table":{"DatabaseName":"seraph_security_lake","TableWildcard":{}}}' \
         #     --permissions SELECT DESCRIBE
 
         # API Gateway REST API

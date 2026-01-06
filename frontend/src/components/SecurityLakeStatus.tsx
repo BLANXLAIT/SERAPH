@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Clock,
   Zap,
+  ExternalLink,
 } from 'lucide-react';
 
 // Map source names to display-friendly names and table identifiers
@@ -36,7 +37,7 @@ interface DataFreshness {
 
 export function SecurityLakeStatus() {
   const { data: status, isLoading: statusLoading, error: statusError } = useSecurityLakeStatus();
-  const { data: sourcesData, isLoading: sourcesLoading } = useLogSources();
+  const { data: sourcesData, isLoading: sourcesLoading, error: sourcesError } = useLogSources();
   const { data: tablesData, isLoading: tablesLoading } = useTables();
   const runQueryMutation = useRunQuery();
 
@@ -45,6 +46,9 @@ export function SecurityLakeStatus() {
   const [freshnessChecked, setFreshnessChecked] = useState(false);
 
   const isLoading = statusLoading || sourcesLoading || tablesLoading;
+
+  // Detect external/cross-account mode: Security Lake APIs fail but tables exist
+  const isExternalMode = (statusError || sourcesError) && !isLoading;
 
   // Load data freshness on mount
   useEffect(() => {
@@ -100,7 +104,117 @@ export function SecurityLakeStatus() {
     );
   }
 
-  if (statusError) {
+  const tables = tablesData?.tables ?? [];
+
+  // For external mode, show simplified view with data freshness only
+  if (isExternalMode) {
+    return (
+      <div className="bg-white rounded-lg border border-gray-200">
+        {/* Header - External Mode */}
+        <div className="px-6 py-4 border-b border-gray-200">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-50 rounded-lg">
+                <ExternalLink className="h-5 w-5 text-blue-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">External Security Lake</h2>
+                <p className="text-sm text-gray-500">
+                  Querying data via cross-account resource link
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={checkDataFreshness}
+                disabled={freshnessLoading}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm',
+                  'border border-gray-300 bg-white text-gray-700',
+                  'hover:bg-gray-50 transition-colors',
+                  'disabled:opacity-50 disabled:cursor-not-allowed'
+                )}
+              >
+                {freshnessLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                Check Data
+              </button>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium bg-blue-50 text-blue-700">
+                <CheckCircle className="h-4 w-4" />
+                Connected
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Data Freshness for External Mode */}
+        <div className="px-6 py-4">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <CloudCog className="h-4 w-4 text-gray-400" />
+              <h3 className="text-sm font-medium text-gray-700">Data Sources</h3>
+            </div>
+            {freshnessChecked && (
+              <div className="flex items-center gap-4 text-xs text-gray-500">
+                <span className="flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full bg-green-500" />
+                  Receiving data
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full bg-yellow-500" />
+                  No recent data
+                </span>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {Object.entries(dataFreshness).length > 0 ? (
+              Object.entries(dataFreshness).map(([source, data]) => (
+                <ExternalSourceItem
+                  key={source}
+                  name={source}
+                  latestEvent={data.latestEvent}
+                  hasRecentData={data.hasRecentData}
+                  isCheckingFreshness={freshnessLoading}
+                />
+              ))
+            ) : freshnessChecked ? (
+              <p className="text-sm text-gray-500 col-span-2">No data sources found</p>
+            ) : (
+              <p className="text-sm text-gray-500 col-span-2">Click "Check Data" to verify data flow</p>
+            )}
+          </div>
+        </div>
+
+        {/* Tables for External Mode */}
+        {tables.length > 0 && (
+          <div className="px-6 py-4 border-t border-gray-200">
+            <div className="flex items-center gap-2 mb-4">
+              <Table className="h-4 w-4 text-gray-400" />
+              <h3 className="text-sm font-medium text-gray-700">Available Tables</h3>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {tables.map((table) => (
+                <span
+                  key={table.name}
+                  className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700"
+                >
+                  {table.name.replace('amazon_security_lake_table_us_east_1_', '')}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Same-account mode: show full status
+  if (statusError && !isExternalMode) {
     return (
       <div className="bg-white rounded-lg border border-red-200 p-6">
         <div className="flex items-center gap-3">
@@ -113,7 +227,6 @@ export function SecurityLakeStatus() {
 
   const isEnabled = status?.enabled ?? false;
   const sources = sourcesData?.sources ?? [];
-  const tables = tablesData?.tables ?? [];
 
   // Group sources by account
   const sourcesByAccount = sources.reduce(
@@ -419,4 +532,49 @@ function formatTimeAgo(timestamp: string): string {
   if (diffMins < 60) return `${diffMins}m ago`;
   if (diffHours < 24) return `${diffHours}h ago`;
   return date.toLocaleDateString();
+}
+
+// Simplified source item for external/cross-account mode
+function ExternalSourceItem({
+  name,
+  latestEvent,
+  hasRecentData,
+  isCheckingFreshness,
+}: {
+  name: string;
+  latestEvent: string | null;
+  hasRecentData: boolean;
+  isCheckingFreshness: boolean;
+}) {
+  const isActive = hasRecentData && latestEvent;
+
+  return (
+    <div
+      className={cn(
+        'flex items-center justify-between px-3 py-3 rounded-lg border',
+        isActive ? 'border-green-200 bg-green-50' : 'border-yellow-200 bg-yellow-50'
+      )}
+    >
+      <div className="flex items-center gap-3">
+        <div className={cn('p-1.5 rounded-md', isActive ? 'bg-green-100' : 'bg-yellow-100')}>
+          {isCheckingFreshness ? (
+            <Loader2 className="h-4 w-4 text-gray-400 animate-spin" />
+          ) : isActive ? (
+            <Zap className="h-4 w-4 text-green-600" />
+          ) : (
+            <AlertCircle className="h-4 w-4 text-yellow-600" />
+          )}
+        </div>
+        <div>
+          <span className={cn('text-sm font-medium block', isActive ? 'text-green-800' : 'text-yellow-800')}>
+            {name}
+          </span>
+          <span className={cn('text-xs flex items-center gap-1', isActive ? 'text-green-600' : 'text-yellow-600')}>
+            {isActive && <Clock className="h-3 w-3" />}
+            {latestEvent ? formatTimeAgo(latestEvent) : 'No recent data'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }

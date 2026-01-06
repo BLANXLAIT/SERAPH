@@ -7,8 +7,11 @@ References:
 - https://docs.aws.amazon.com/security-lake/latest/userguide/security-hub-query-examples-sourceversion2.html
 """
 
+import os
+
 # Database and table configuration
-DATABASE = "amazon_security_lake_glue_db_us_east_1"
+# For cross-account deployments, set SECURITY_LAKE_DATABASE to the resource link database name
+DATABASE = os.environ.get("SECURITY_LAKE_DATABASE", "amazon_security_lake_glue_db_us_east_1")
 CLOUDTRAIL_TABLE = "amazon_security_lake_table_us_east_1_cloud_trail_mgmt_2_0"
 SECURITYHUB_TABLE = "amazon_security_lake_table_us_east_1_sh_findings_2_0"
 

@@ -30,6 +30,12 @@ CloudFront Distribution
 - Security Lake: 7-day retention
 - Sources: CloudTrail management events, Security Hub findings
 
+**Account Structure:**
+| Account | ID | Purpose |
+|---------|-----|---------|
+| Log Archive | 779315395440 | Security Lake data |
+| Security | 429971481640 | SERAPH dashboard (cross-account) |
+
 ## Common Commands
 
 ```bash
@@ -166,6 +172,63 @@ curl -X POST https://<API_URL>/api/securitylake/query \
    - Check Security Lake status shows "enabled"
    - Check tables list is populated
    - Run a test query
+
+### Cross-Account Deployment (Security Account)
+
+For deploying to the Security account with data in Log Archive:
+
+1. **Create Security Lake subscriber** (Log Archive Console)
+   - Subscriber name: `seraph-dashboard`
+   - Access type: Query access (Lake Formation)
+   - Principal: `429971481640`
+
+2. **Accept RAM share** (Security Account Console)
+
+3. **Create resource link database**
+   ```bash
+   AWS_PROFILE=security-admin aws glue create-database \
+     --database-input '{
+       "Name": "seraph_security_lake",
+       "TargetDatabase": {
+         "CatalogId": "779315395440",
+         "DatabaseName": "amazon_security_lake_glue_db_us_east_1"
+       }
+     }' \
+     --region us-east-1
+   ```
+
+4. **Deploy CDK stack**
+   ```bash
+   cd infrastructure
+   AWS_PROFILE=security-admin uv run cdk bootstrap aws://429971481640/us-east-1
+   AWS_PROFILE=security-admin uv run cdk deploy seraph-web \
+     -c security_lake_account_id=779315395440 \
+     -c security_lake_database=seraph_security_lake
+   ```
+
+5. **Grant Lake Formation permissions**
+   ```bash
+   LAMBDA_ROLE_ARN="arn:aws:iam::429971481640:role/seraph-web-APIFunctionServiceRole..."
+
+   AWS_PROFILE=security-admin aws lakeformation grant-permissions \
+     --principal DataLakePrincipalIdentifier="$LAMBDA_ROLE_ARN" \
+     --resource '{"Database":{"Name":"seraph_security_lake"}}' \
+     --permissions DESCRIBE \
+     --region us-east-1
+
+   AWS_PROFILE=security-admin aws lakeformation grant-permissions \
+     --principal DataLakePrincipalIdentifier="$LAMBDA_ROLE_ARN" \
+     --resource '{"Table":{"DatabaseName":"seraph_security_lake","TableWildcard":{}}}' \
+     --permissions SELECT DESCRIBE \
+     --region us-east-1
+   ```
+
+6. **Deploy frontend**
+   ```bash
+   cd frontend && npm run build
+   AWS_PROFILE=security-admin aws s3 sync dist/ s3://<BUCKET> --delete --region us-east-1
+   AWS_PROFILE=security-admin aws cloudfront create-invalidation --distribution-id <DIST_ID> --paths "/*"
+   ```
 
 ### Deployment Info
 
