@@ -1,18 +1,30 @@
 """Web infrastructure stack for SERAPH Security Lake Dashboard."""
 
 from aws_cdk import (
-    Stack,
+    Aws,
+    BundlingOptions,
+    CfnOutput,
     Duration,
     RemovalPolicy,
-    CfnOutput,
-    BundlingOptions,
-    Aws,
-    aws_s3 as s3,
-    aws_cloudfront as cloudfront,
-    aws_cloudfront_origins as origins,
+    Stack,
+)
+from aws_cdk import (
     aws_apigateway as apigw,
-    aws_lambda as lambda_,
+)
+from aws_cdk import (
+    aws_cloudfront as cloudfront,
+)
+from aws_cdk import (
+    aws_cloudfront_origins as origins,
+)
+from aws_cdk import (
     aws_iam as iam,
+)
+from aws_cdk import (
+    aws_lambda as lambda_,
+)
+from aws_cdk import (
+    aws_s3 as s3,
 )
 from constructs import Construct
 
@@ -170,7 +182,7 @@ class WebStack(Stack):
         #     --permissions DESCRIBE
         #   aws lakeformation grant-permissions \
         #     --principal DataLakePrincipalIdentifier=<LAMBDA_ROLE_ARN> \
-        #     --resource '{"Table":{"DatabaseName":"amazon_security_lake_glue_db_us_east_1","TableWildcard":{}}}' \
+        #     --resource '{"Table":{"DatabaseName":"..._us_east_1","TableWildcard":{}}}' \
         #     --permissions SELECT DESCRIBE
 
         # API Gateway REST API

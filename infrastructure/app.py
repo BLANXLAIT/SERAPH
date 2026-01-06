@@ -4,7 +4,6 @@
 import os
 
 import aws_cdk as cdk
-
 from stacks.web_stack import WebStack
 
 app = cdk.App()
