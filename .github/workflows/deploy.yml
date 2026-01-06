@@ -17,7 +17,7 @@ env:
   PYTHON_VERSION: '3.11'
   # Log Archive account resources
   S3_BUCKET_NAME: seraph-web-websitebucket75c24d94-gdiastwqx3qy
-  CLOUDFRONT_DISTRIBUTION_ID: d3h1nbmpge10n1
+  CLOUDFRONT_DISTRIBUTION_ID: E11O2GSHIEKN22
 
 # Required for OIDC authentication with AWS
 permissions:
@@ -133,4 +133,4 @@ jobs:
       - name: Deployment complete
         run: |
           echo "Frontend deployed successfully!"
-          echo "URL: https://${{ env.CLOUDFRONT_DISTRIBUTION_ID }}.cloudfront.net"
+          echo "URL: https://d3h1nbmpge10n1.cloudfront.net"
